@@ -1,23 +1,46 @@
-"""
-Module contenant la classe Backtester pour exécuter les backtests de stratégies.
+"""Backtesting engine for investment strategies.
+
+This module contains the `Backtester` class, which is the main engine for
+executing backtests of trading strategies on historical market data. It handles
+portfolio construction, trade execution, transaction costs, slippage modeling,
+and multi-asset portfolio tracking. The backtester maintains a complete history
+of portfolio values, positions, and trades throughout the simulation.
+
+Notes
+-----
+The backtester uses a discrete-time simulation approach, iterating through
+historical data one timestamp at a time. At each step, it queries the strategy
+for target positions and executes trades as needed. Portfolio value is calculated
+by summing cash plus the market value of all asset positions.
+
+Transaction costs and slippage are applied to each trade independently. The
+framework supports both single-asset and multi-asset portfolios through a
+dictionary-based position tracking system.
+
+Authors
+-------
+Mariano Benjamin
+Noah Chikhi
+Antoine Moniz
 """
 
 import pandas as pd
 import numpy as np
-from typing import Union, Optional, Dict, Any
+from typing import Union, Optional, Dict, Any, List
 from pathlib import Path
 import warnings
 
 from .strategy import Strategy
 from .result import Result
+from .data_handler import DataHandler
 
 
 class Backtester:
     """
-    Classe principale pour exécuter des backtests de stratégies d'investissement.
+    Main class for executing investment strategy backtests.
     
-    Cette classe prend des données historiques et permet d'exécuter des stratégies
-    pour évaluer leur performance.
+    This class takes historical data and allows executing strategies
+    to evaluate their performance. Supports multi-asset portfolios.
     """
     
     def __init__(self, data: Union[pd.DataFrame, str, Path], 
@@ -25,166 +48,178 @@ class Backtester:
                  transaction_cost: float = 0.001,
                  slippage: float = 0.0001):
         """
-        Initialise le backtester avec des données historiques.
+        Initialize the backtester with historical data.
         
-        Args:
-            data (Union[pd.DataFrame, str, Path]): Données historiques ou chemin vers fichier CSV/Parquet
-            initial_capital (float): Capital initial pour le backtest
-            transaction_cost (float): Coût de transaction en pourcentage (0.001 = 0.1%)
-            slippage (float): Slippage en pourcentage (0.0001 = 0.01%)
+        Parameters
+        ----------
+        data : Union[pd.DataFrame, str, Path]
+            Historical data or path to CSV/Parquet file.
+        initial_capital : float, default=100000
+            Initial capital for the backtest.
+        transaction_cost : float, default=0.001
+            Transaction cost as a percentage (0.001 = 0.1%).
+        slippage : float, default=0.0001
+            Slippage as a percentage (0.0001 = 0.01%).
         """
         self.initial_capital = initial_capital
         self.transaction_cost = transaction_cost
         self.slippage = slippage
         
-        # Chargement des données
-        self.data = self._load_data(data)
-        self._validate_data()
-        
-    def _load_data(self, data: Union[pd.DataFrame, str, Path]) -> pd.DataFrame:
-        """
-        Charge les données depuis différents formats.
-        
-        Args:
-            data: Données à charger
-            
-        Returns:
-            pd.DataFrame: Données chargées et formatées
-        """
-        if isinstance(data, pd.DataFrame):
-            return data.copy()
-        
-        file_path = Path(data)
-        if not file_path.exists():
-            raise FileNotFoundError(f"Le fichier {file_path} n'existe pas")
-            
-        if file_path.suffix.lower() == '.csv':
-            df = pd.read_csv(file_path)
-        elif file_path.suffix.lower() in ['.parquet', '.pq']:
-            df = pd.read_parquet(file_path)
-        else:
-            raise ValueError(f"Format de fichier non supporté: {file_path.suffix}")
-            
-        return df
-    
-    def _validate_data(self):
-        """
-        Valide que les données contiennent les colonnes requises.
-        """
-        required_cols = ['close']
-        if 'date' in self.data.columns:
-            self.data['date'] = pd.to_datetime(self.data['date'])
-            self.data.set_index('date', inplace=True)
-        elif not isinstance(self.data.index, pd.DatetimeIndex):
-            # Si pas de colonne date et index pas datetime, on crée un index temporel
-            warnings.warn("Aucune colonne 'date' trouvée et index pas datetime. "
-                         "Création d'un index temporel artificiel.")
-            date_range = pd.date_range(start='2020-01-01', periods=len(self.data), freq='D')
-            self.data.index = date_range
-            
-        # Vérification des colonnes requises
-        missing_cols = [col for col in required_cols if col not in self.data.columns]
-        if missing_cols:
-            raise ValueError(f"Colonnes manquantes dans les données: {missing_cols}")
-            
-        # Ajout des colonnes optionnelles si manquantes
-        if 'open' not in self.data.columns:
-            self.data['open'] = self.data['close'].shift(1).fillna(self.data['close'])
-        if 'high' not in self.data.columns:
-            self.data['high'] = self.data['close']
-        if 'low' not in self.data.columns:
-            self.data['low'] = self.data['close']
-        if 'volume' not in self.data.columns:
-            self.data['volume'] = 1000000  # Volume artificiel
-            
-        # Tri par date
-        self.data.sort_index(inplace=True)
+        # Load data using DataHandler
+        data_handler = DataHandler()
+        self.data = data_handler.load(data)
         
     def run_backtest(self, strategy: Strategy, 
                     start_date: Optional[str] = None,
                     end_date: Optional[str] = None,
-                    benchmark: Optional[str] = None) -> Result:
+                    benchmark: Optional[str] = None,
+                    asset_symbols: Optional[List[str]] = None) -> Result:
         """
-        Exécute un backtest avec la stratégie donnée.
+        Execute a backtest with the given strategy.
         
-        Args:
-            strategy (Strategy): Stratégie à tester
-            start_date (str, optional): Date de début (format YYYY-MM-DD)
-            end_date (str, optional): Date de fin (format YYYY-MM-DD)
-            benchmark (str, optional): Nom de la colonne à utiliser comme benchmark
+        Parameters
+        ----------
+        strategy : Strategy
+            Strategy to test.
+        start_date : str, optional
+            Start date (format YYYY-MM-DD).
+        end_date : str, optional
+            End date (format YYYY-MM-DD).
+        benchmark : str, optional
+            Column name to use as benchmark.
+        asset_symbols : List[str], optional
+            List of asset symbols for multi-asset portfolios.
+            Defaults to ['asset'] for single-asset backtests.
             
-        Returns:
-            Result: Résultats du backtest
+        Returns
+        -------
+        Result
+            Backtest results.
         """
-        # Préparation des données
+        # Prepare data
         data_subset = self._prepare_data_subset(start_date, end_date)
         
-        # Entraînement de la stratégie si nécessaire
+        # Determine asset symbols (default to single asset)
+        if asset_symbols is None:
+            asset_symbols = ['asset']
+        
+        # Train strategy if necessary
         if hasattr(strategy, 'fit') and not strategy.is_fitted:
-            # Utilise les premières 60% des données pour l'entraînement
+            # Use first 60% of data for training
             train_size = int(len(data_subset) * 0.6)
             train_data = data_subset.iloc[:train_size]
             strategy.fit(train_data)
             
-        # Variables pour le backtest
-        positions = []
+        # Variables for backtest (multi-asset support)
+        positions_history = []  # List of position dicts over time
         portfolio_values = [self.initial_capital]
         trades = []
-        current_position = 0.0
-        current_shares = 0.0
+        current_positions = {symbol: 0.0 for symbol in asset_symbols}  # Dict[str, float]
+        current_shares = {symbol: 0.0 for symbol in asset_symbols}  # Dict[str, float]
         cash = self.initial_capital
         
-        # Calcul des dates de rééquilibrage
+        # Track cash and shares over time
+        cash_history = []
+        shares_history = []  # List of shares dicts over time
+        
+        # Calculate rebalancing dates
         rebalance_dates = self._get_rebalance_dates(data_subset, strategy.rebalance_frequency)
         
-        # Boucle principale du backtest
+        # Main backtest loop
         for i, (date, row) in enumerate(data_subset.iterrows()):
-            # Données historiques disponibles jusqu'à cette date
+            # Historical data available up to this date
             historical_data = data_subset.iloc[:i+1]
             
-            # Vérification si c'est une date de rééquilibrage
+            # Check if it's a rebalancing date
             should_rebalance = date in rebalance_dates or i == 0
             
             if should_rebalance and len(historical_data) > 1:
-                # Demande à la stratégie la nouvelle position
+                # Request target positions from strategy
                 try:
-                    new_position = strategy.get_position(historical_data, current_position)
-                    new_position = np.clip(new_position, -1.0, 1.0)  # Limite entre -1 et 1
+                    new_positions = strategy.get_position(historical_data, current_positions.copy())
+                    # Enforce long-only constraint (0-100% allocation per asset)
+                    new_positions = {symbol: np.clip(pos, 0.0, 1.0) 
+                                   for symbol, pos in new_positions.items()}
                 except Exception as e:
-                    warnings.warn(f"Erreur dans la stratégie à la date {date}: {e}")
-                    new_position = current_position
+                    warnings.warn(f"Strategy error at date {date}: {e}")
+                    new_positions = current_positions.copy()
                     
-                # Exécution du trade si changement de position
-                if abs(new_position - current_position) > 0.001:  # Seuil de tolérance
-                    trade_info = self._execute_trade(
-                        current_position, new_position, row['close'], 
-                        cash, current_shares, date
-                    )
-                    if trade_info:
-                        trades.append(trade_info)
-                        cash = trade_info['cash_after']
-                        current_shares = trade_info['shares_after']
-                        current_position = new_position
+                # Execute trades when positions change or on rebalance dates
+                # to maintain target allocations despite price drift
+                for symbol in asset_symbols:
+                    old_pos = current_positions.get(symbol, 0.0)
+                    new_pos = new_positions.get(symbol, 0.0)
+                    
+                    # Execute trade if target position changed or rebalancing required
+                    if abs(new_pos - old_pos) > 0.001 or should_rebalance:
+                        # Retrieve current price (column names normalized to lowercase by DataHandler)
+                        if len(asset_symbols) == 1:
+                            price = row['close']
+                        else:
+                            price_col = f'{symbol.lower()}_close'
+                            price = row[price_col] if price_col in row.index else row['close']
+                        
+                        # Construct price dictionary for portfolio value calculation
+                        current_prices = {}
+                        for s in asset_symbols:
+                            if len(asset_symbols) == 1:
+                                current_prices[s] = row['close']
+                            else:
+                                price_col = f'{s.lower()}_close'
+                                current_prices[s] = row[price_col] if price_col in row.index else row['close']
+                        
+                        trade_info = self._execute_trade(
+                            symbol, old_pos, new_pos, price, 
+                            cash, current_shares.get(symbol, 0.0), date,
+                            current_shares, current_prices,
+                            force_rebalance=should_rebalance
+                        )
+                        if trade_info:
+                            trades.append(trade_info)
+                            cash = trade_info['cash_after']
+                            current_shares[symbol] = trade_info['shares_after']
+                            current_positions[symbol] = new_pos
             
-            # Calcul de la valeur du portefeuille
-            portfolio_value = cash + current_shares * row['close']
+            # Compute total portfolio value from cash and asset holdings
+            assets_value = 0.0
+            for symbol in asset_symbols:
+                shares = current_shares.get(symbol, 0.0)
+                # Retrieve price using normalized column name
+                if len(asset_symbols) == 1:
+                    price = row['close']
+                else:
+                    price_col = f'{symbol.lower()}_close'
+                    price = row[price_col] if price_col in row.index else row['close']
+                assets_value += shares * price
+            
+            portfolio_value = cash + assets_value
             portfolio_values.append(portfolio_value)
-            positions.append(current_position)
+            positions_history.append(current_positions.copy())
+            cash_history.append(cash)
+            shares_history.append(current_shares.copy())
             
-        # Création du DataFrame des résultats
+        # Construct results DataFrame with portfolio state history
         results_df = pd.DataFrame({
             'date': data_subset.index,
             'close': data_subset['close'].values,
-            'position': positions,
-            'portfolio_value': portfolio_values[1:]  # Exclut la valeur initiale
+            'position': [pos.get(asset_symbols[0], 0.0) for pos in positions_history],  # Primary asset allocation
+            'portfolio_value': portfolio_values[1:],  # Exclude initial value
+            'cash': cash_history
         })
         results_df.set_index('date', inplace=True)
         
-        # Calcul des rendements
+        # Append individual asset positions and share counts
+        for symbol in asset_symbols:
+            # Column names use lowercase convention for consistency
+            symbol_lower = symbol.lower()
+            results_df[f'position_{symbol_lower}'] = [pos.get(symbol, 0.0) for pos in positions_history]
+            results_df[f'{symbol_lower}_shares'] = [shares.get(symbol, 0.0) for shares in shares_history]
+        
+        # Compute period and cumulative returns
         results_df['returns'] = results_df['portfolio_value'].pct_change()
         results_df['cumulative_returns'] = (results_df['portfolio_value'] / self.initial_capital) - 1
         
-        # Benchmark (Buy and Hold par défaut)
+        # Establish benchmark comparison (defaults to buy-and-hold)
         if benchmark and benchmark in data_subset.columns:
             benchmark_data = data_subset[benchmark]
         else:
@@ -196,19 +231,32 @@ class Backtester:
         results_df['benchmark_returns'] = benchmark_returns
         results_df['benchmark_cumulative'] = benchmark_cumulative
         
-        # Création de l'objet Result
+        # Package backtest results into Result object
         return Result(
             strategy=strategy,
             results_df=results_df,
             trades=trades,
             initial_capital=self.initial_capital,
             transaction_cost=self.transaction_cost,
-            slippage=self.slippage
+            slippage=self.slippage,
+            asset_symbols=asset_symbols
         )
     
     def _prepare_data_subset(self, start_date: Optional[str], end_date: Optional[str]) -> pd.DataFrame:
         """
-        Prépare un sous-ensemble des données pour le backtest.
+        Prepare a data subset for the backtest.
+        
+        Parameters
+        ----------
+        start_date : str, optional
+            Start date for filtering.
+        end_date : str, optional
+            End date for filtering.
+            
+        Returns
+        -------
+        pd.DataFrame
+            Filtered data subset.
         """
         data_subset = self.data.copy()
         
@@ -221,16 +269,28 @@ class Backtester:
             data_subset = data_subset[data_subset.index <= end_date]
             
         if len(data_subset) == 0:
-            raise ValueError("Aucune donnée disponible pour la période spécifiée")
+            raise ValueError("No data available for the specified period")
             
         return data_subset
     
     def _get_rebalance_dates(self, data: pd.DataFrame, frequency: str) -> pd.DatetimeIndex:
         """
-        Calcule les dates de rééquilibrage selon la fréquence.
+        Calculate rebalancing dates based on frequency.
+        
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Data with datetime index.
+        frequency : str
+            Rebalancing frequency ('D', 'W', 'M', 'Q', 'Y').
+            
+        Returns
+        -------
+        pd.DatetimeIndex
+            Rebalancing dates.
         """
         if frequency == 'D':
-            return data.index  # Tous les jours
+            return data.index  # Every day
         elif frequency == 'W':
             return pd.date_range(start=data.index[0], end=data.index[-1], freq='W')
         elif frequency == 'M':
@@ -240,39 +300,73 @@ class Backtester:
         elif frequency == 'Y':
             return pd.date_range(start=data.index[0], end=data.index[-1], freq='Y')
         else:
-            return data.index  # Par défaut, quotidien
+            return data.index  # Default: daily
     
-    def _execute_trade(self, old_position: float, new_position: float, price: float,
-                      cash: float, current_shares: float, date: pd.Timestamp) -> Optional[Dict]:
+    def _execute_trade(self, symbol: str, old_position: float, new_position: float, price: float,
+                      cash: float, current_shares: float, date: pd.Timestamp,
+                      all_shares: Dict[str, float], current_prices: Dict[str, float],
+                      force_rebalance: bool = False) -> Optional[Dict]:
         """
-        Exécute un trade et calcule les coûts.
+        Execute a trade and calculate costs for a specific asset.
+        
+        Parameters
+        ----------
+        symbol : str
+            Asset symbol being traded.
+        old_position : float
+            Previous position (-1 to 1).
+        new_position : float
+            New target position (-1 to 1).
+        price : float
+            Current market price for this asset.
+        cash : float
+            Available cash.
+        current_shares : float
+            Current number of shares held for this asset.
+        date : pd.Timestamp
+            Trade date.
+        all_shares : Dict[str, float]
+            All current share holdings across assets.
+        current_prices : Dict[str, float]
+            Current prices for all assets.
+            
+        Returns
+        -------
+        Dict or None
+            Trade information dictionary, or None if no trade executed.
         """
         position_change = new_position - old_position
         
-        if abs(position_change) < 0.001:
+        # Bypass execution if position unchanged and rebalancing not required
+        if abs(position_change) < 0.001 and not force_rebalance:
             return None
             
-        # Calcul du nombre d'actions à acheter/vendre
-        current_portfolio_value = cash + current_shares * price
-        target_value = new_position * current_portfolio_value
+        # Determine total portfolio value across all holdings
+        total_assets_value = sum(all_shares.get(s, 0.0) * current_prices.get(s, 0.0) 
+                                for s in all_shares.keys())
+        total_portfolio_value = cash + total_assets_value
+        
+        # Compute target allocation value for this asset
+        target_value = new_position * total_portfolio_value
         current_value = current_shares * price
         trade_value = target_value - current_value
         
-        # Application du slippage
+        # Apply slippage model to execution price
         effective_price = price * (1 + self.slippage * np.sign(trade_value))
         
-        # Calcul des actions à trader
+        # Determine quantity to execute
         shares_to_trade = trade_value / effective_price
         
-        # Coûts de transaction
+        # Calculate transaction cost impact
         transaction_cost_amount = abs(trade_value) * self.transaction_cost
         
-        # Mise à jour du cash et des actions
+        # Update portfolio state post-execution
         new_cash = cash - trade_value - transaction_cost_amount
         new_shares = current_shares + shares_to_trade
         
         return {
             'date': date,
+            'symbol': symbol,
             'price': price,
             'effective_price': effective_price,
             'shares_traded': shares_to_trade,

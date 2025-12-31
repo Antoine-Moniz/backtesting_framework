@@ -1,56 +1,127 @@
-"""
-Module contenant la classe abstraite Strategy et le décorateur pour les stratégies simples.
+"""Strategy abstraction layer.
+
+This module defines the abstract `Strategy` base class that all trading
+strategies must inherit from, as well as the `strategy_decorator` helper
+function for creating simple strategies from functions. The Strategy class
+enforces a consistent interface for position generation across the framework.
+
+Notes
+-----
+All strategies must implement the `get_position` method, which takes historical
+data and current positions (as a dictionary) and returns target positions. This
+design supports multi-asset portfolios where positions are tracked per asset symbol.
+
+The optional `fit` method allows strategies to perform pre-training or calibration
+on historical data before backtesting begins.
+
+Authors
+-------
+Mariano Benjamin
+Noah Chikhi
+Antoine Moniz
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Union, Callable
+from typing import Dict, Callable, Optional
 import pandas as pd
-import numpy as np
 
 
 class Strategy(ABC):
     """
-    Classe abstraite pour définir une stratégie d'investissement.
+    Abstract base class for defining investment strategies.
     
-    Cette classe doit être héritée pour créer des stratégies personnalisées.
-    Elle définit l'interface requise pour toutes les stratégies.
+    This class must be inherited to create custom strategies.
+    It defines the required interface that all strategies must implement.
+    
+    Parameters
+    ----------
+    name : str, optional
+        Name of the strategy. Defaults to class name if not provided.
+    rebalance_frequency : str, optional
+        Rebalancing frequency: 'D' (daily), 'W' (weekly), 'M' (monthly),
+        'Q' (quarterly), or 'Y' (yearly). Default is 'D'.
+    
+    Attributes
+    ----------
+    name : str
+        The strategy name
+    rebalance_frequency : str
+        How often the strategy rebalances
+    is_fitted : bool
+        Whether the strategy has been fitted/trained
+    
+    Examples
+    --------
+    >>> class MyStrategy(Strategy):
+    ...     def __init__(self):
+    ...         super().__init__("My Strategy")
+    ...     
+    ...     def get_position(self, data, positions):
+    ...         # Strategy logic here
+    ...         return {'AAPL': 1.0}
     """
     
-    def __init__(self, name: str = None, rebalance_frequency: str = "D"):
+    def __init__(self, rebalance_frequency: str = "D"):
         """
-        Initialise la stratégie.
+        Initialize the strategy.
         
-        Args:
-            name (str): Nom de la stratégie
-            rebalance_frequency (str): Fréquence de rééquilibrage ('D', 'W', 'M', 'Q', 'Y')
+        Parameters
+        ----------
+        rebalance_frequency : str, optional
+            Rebalancing frequency ('D', 'W', 'M', 'Q', 'Y')
         """
-        self.name = name if name else self.__class__.__name__
         self.rebalance_frequency = rebalance_frequency
         self.is_fitted = False
         
     @abstractmethod
-    def get_position(self, historical_data: pd.DataFrame, current_position: float) -> float:
+    def get_position(self, data: pd.DataFrame, positions: Dict[str, float]) -> Dict[str, float]:
         """
-        Méthode abstraite obligatoire pour déterminer la position à prendre.
+        Abstract method to determine target positions for all assets.
         
-        Args:
-            historical_data (pd.DataFrame): Données historiques disponibles jusqu'au moment actuel
-            current_position (float): Position actuelle (entre -1 et 1, où 1 = 100% long, -1 = 100% short, 0 = neutre)
+        This method must be implemented by all concrete strategy classes.
+        It receives current market data and current positions, and returns
+        the target positions for each asset in the portfolio.
+        
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Historical market data available up to the current moment
+        positions : Dict[str, float]
+            Current positions for all assets, where values are between -1 and 1:
+            * 1.0 = 100% long
+            * -1.0 = 100% short
+            * 0.0 = neutral/no position
             
-        Returns:
-            float: Nouvelle position à prendre (entre -1 et 1)
+        Returns
+        -------
+        Dict[str, float]
+            Target positions for each asset (values between -1 and 1)
+        
+        Examples
+        --------
+        >>> def get_position(self, data, positions):
+        ...     return {'SPY': 0.6, 'AGG': 0.4}  # 60/40 portfolio
         """
         pass
     
     def fit(self, data: pd.DataFrame) -> None:
         """
-        Méthode optionnelle pour entraîner/calibrer la stratégie sur des données historiques.
+        Optional method to train/calibrate the strategy on historical data.
         
-        Par défaut, cette méthode ne fait rien. Elle peut être surchargée par les stratégies
-        qui ont besoin d'un entraînement préalable.
+        By default, this method does nothing. It can be overridden by strategies
+        that require prior training (e.g., machine learning based strategies).
         
-        Args:
-            data (pd.DataFrame): Données d'entraînement
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Training data
+        
+        Examples
+        --------
+        >>> strategy = MyMLStrategy()
+        >>> strategy.fit(training_data)
+        >>> strategy.is_fitted
+        True
         """
         self.is_fitted = True
     
@@ -61,116 +132,59 @@ class Strategy(ABC):
         return self.__str__()
 
 
-def strategy_decorator(name: str = None, rebalance_frequency: str = "D"):
+def strategy_decorator(func: Optional[Callable] = None, *,
+                       name: Optional[str] = None, 
+                       rebalance_frequency: str = "D"):
     """
-    Décorateur pour créer des stratégies simples sans avoir besoin d'hériter de Strategy.
+    Decorator for strategy methods that validates return values.
     
-    Ce décorateur permet de transformer une fonction simple en stratégie complète.
-    La fonction décorée doit accepter (historical_data, current_position) et retourner une position.
+    Can be used with or without arguments:
+    - @strategy_decorator  # Simple usage
+    - @strategy_decorator(name="My Strategy")  # With arguments
     
-    Args:
-        name (str): Nom de la stratégie
-        rebalance_frequency (str): Fréquence de rééquilibrage
-        
-    Returns:
-        Strategy: Instance de stratégie créée à partir de la fonction
-        
-    Example:
-        @strategy_decorator(name="Simple MA Cross", rebalance_frequency="D")
-        def ma_cross_strategy(historical_data, current_position):
-            if len(historical_data) < 20:
-                return 0
-            short_ma = historical_data['close'].rolling(5).mean().iloc[-1]
-            long_ma = historical_data['close'].rolling(20).mean().iloc[-1]
-            return 1 if short_ma > long_ma else -1
-    """
-    def decorator(func: Callable):
-        class DecoratedStrategy(Strategy):
-            def __init__(self):
-                strategy_name = name if name else func.__name__
-                super().__init__(strategy_name, rebalance_frequency)
-                self._strategy_func = func
-                
-            def get_position(self, historical_data: pd.DataFrame, current_position: float) -> float:
-                return self._strategy_func(historical_data, current_position)
-                
-        return DecoratedStrategy()
+    When used on a method within a Strategy class, it validates that the method
+    returns a dictionary with numeric values.
     
-    return decorator
-
-
-# Stratégies d'exemple pour les tests et démonstrations
-
-class BuyAndHoldStrategy(Strategy):
+    Parameters
+    ----------
+    func : Callable, optional
+        The function to decorate (when used without parentheses)
+    name : str, optional
+        Strategy name for standalone function decoration
+    rebalance_frequency : str, optional
+        Rebalancing frequency for standalone function decoration
+        
+    Returns
+    -------
+    Callable
+        Decorated function with validation
+        
+    Examples
+    --------
+    >>> class MyStrategy(Strategy):
+    ...     @strategy_decorator
+    ...     def get_position(self, data, positions):
+    ...         return {'asset': 1.0}
     """
-    Stratégie simple Buy and Hold - achète au début et ne vend jamais.
-    """
+    import functools
     
-    def __init__(self):
-        super().__init__("Buy and Hold", "D")
-        
-    def get_position(self, historical_data: pd.DataFrame, current_position: float) -> float:
-        """Toujours long à 100%"""
-        return 1.0
-
-
-class MovingAverageCrossStrategy(Strategy):
-    """
-    Stratégie de croisement de moyennes mobiles.
-    Achète quand la MA courte passe au-dessus de la MA longue, vend dans le cas contraire.
-    """
+    def decorator_impl(f: Callable) -> Callable:
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            result = f(*args, **kwargs)
+            # Validate return value
+            if not isinstance(result, dict):
+                raise ValueError("get_position must return a dictionary")
+            for key, value in result.items():
+                if not isinstance(value, (int, float)):
+                    raise ValueError(f"Position for '{key}' must be numeric, got {type(value)}")
+            return result
+        return wrapper
     
-    def __init__(self, short_window: int = 5, long_window: int = 20):
-        super().__init__(f"MA Cross ({short_window}/{long_window})", "D")
-        self.short_window = short_window
-        self.long_window = long_window
-        
-    def get_position(self, historical_data: pd.DataFrame, current_position: float) -> float:
-        """
-        Détermine la position basée sur le croisement des moyennes mobiles.
-        """
-        if len(historical_data) < self.long_window:
-            return 0  # Pas assez de données
-            
-        # Calcul des moyennes mobiles
-        short_ma = historical_data['close'].rolling(self.short_window).mean().iloc[-1]
-        long_ma = historical_data['close'].rolling(self.long_window).mean().iloc[-1]
-        
-        # Signal de position
-        if short_ma > long_ma:
-            return 1.0  # Long
-        else:
-            return -1.0  # Short
-
-
-class MeanReversionStrategy(Strategy):
-    """
-    Stratégie de retour à la moyenne utilisant les bandes de Bollinger.
-    """
-    
-    def __init__(self, window: int = 20, num_std: float = 2.0):
-        super().__init__(f"Mean Reversion (BB {window}, {num_std}σ)", "D")
-        self.window = window
-        self.num_std = num_std
-        
-    def get_position(self, historical_data: pd.DataFrame, current_position: float) -> float:
-        """
-        Position basée sur les bandes de Bollinger pour le retour à la moyenne.
-        """
-        if len(historical_data) < self.window:
-            return 0
-            
-        closes = historical_data['close']
-        ma = closes.rolling(self.window).mean().iloc[-1]
-        std = closes.rolling(self.window).std().iloc[-1]
-        current_price = closes.iloc[-1]
-        
-        upper_band = ma + (self.num_std * std)
-        lower_band = ma - (self.num_std * std)
-        
-        if current_price > upper_band:
-            return -1.0  # Prix trop haut, vendre
-        elif current_price < lower_band:
-            return 1.0   # Prix trop bas, acheter
-        else:
-            return 0.0   # Neutre
+    # Handle both @strategy_decorator and @strategy_decorator()
+    if func is not None:
+        # Used without parentheses: @strategy_decorator
+        return decorator_impl(func)
+    else:
+        # Used with parentheses: @strategy_decorator()
+        return decorator_impl
