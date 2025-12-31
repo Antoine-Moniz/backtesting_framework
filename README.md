@@ -1,214 +1,254 @@
-# Framework de Backtesting de Stratégies d'Investissement
+# Investment Strategy Backtesting Framework
 
-Un framework Python flexible et extensible pour évaluer et comparer différentes stratégies d'investissement sur des données historiques.
+## Overview
 
-## Caractéristiques
+This project implements a comprehensive and extensible backtesting framework designed to evaluate and compare investment strategies on historical financial data. Developed as part of the M2 Quantitative Finance program at Université Paris Dauphine-PSL, this framework provides researchers, students, and practitioners with professional-grade tools for strategy development, testing, and analysis.
 
-- 🚀 **Interface simple et intuitive** : Créez des stratégies en quelques lignes de code
-- 📊 **Métriques complètes** : Plus de 15 métriques de performance incluant Sharpe, Sortino, drawdown, etc.
-- 📈 **Visualisations avancées** : Support de matplotlib, seaborn et plotly
-- 🔧 **Extensible** : Classe abstraite Strategy ou décorateur pour les stratégies simples
-- 💰 **Réaliste** : Prise en compte des coûts de transaction et du slippage
-- 📦 **Multi-actifs** : Support des stratégies sur un ou plusieurs actifs
-- ⚡ **Performance** : Optimisé pour les gros volumes de données
+The framework adopts a modular, object-oriented architecture that balances ease of use with powerful functionality. Users can create custom strategies through either class inheritance or decorator-based approaches, test them against historical data with realistic transaction costs and slippage, and analyze results through comprehensive metrics and visualizations.
 
-## Installation
+## Features
+
+**Core Capabilities:**
+- Simple and intuitive API for strategy creation and testing
+- Support for multiple data formats (CSV, Parquet, pandas DataFrame)
+- Comprehensive performance metrics
+- Multi-backend visualization support (matplotlib, seaborn, plotly)
+- Realistic trading simulation with transaction costs and slippage
+- Multi-asset portfolio support through dictionary-based position API
+- Flexible rebalancing frequency configuration (daily, weekly, monthly)
+
+**Advanced Features:**
+- Walk-forward analysis for temporal validation
+- Parameter optimization and robustness testing
+- Strategy comparison and correlation analysis
+- Benchmark-relative metrics (alpha, beta)
+- Customizable risk-free rates and market benchmarks
+
+## Installation & Usage
+
+### Installation
+
+Clone the repository and install the package:
 
 ```bash
+git clone https://github.com/Antoine-Moniz/backtesting_framework.git
+cd backtesting_framework
 pip install -e .
 ```
 
-Pour installer avec les dépendances de développement :
+For development with testing dependencies:
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-## Utilisation rapide
+### Quick Start Example
 
 ```python
 import pandas as pd
-from backtesting_framework import Backtester, BuyAndHoldStrategy, MovingAverageCrossStrategy
+from backtesting_framework import Backtester, Strategy
+from strategies.buy_and_hold import BuyAndHoldStrategy
+from strategies.moving_average_cross import MovingAverageCrossStrategy
 
-# Chargement des données (CSV, Parquet ou DataFrame)
-backtester = Backtester('data.csv', initial_capital=100000)
+# Load historical data (CSV, Parquet, or DataFrame)
+data = pd.read_csv('data.csv')
+backtester = Backtester(
+    data=data,
+    initial_capital=100000,
+    transaction_cost=0.001,  # 0.1% per trade
+    slippage=0.0005          # 0.05% slippage
+)
 
-# Création d'une stratégie
+# Create and test a strategy
 strategy = MovingAverageCrossStrategy(short_window=10, long_window=30)
-
-# Exécution du backtest
 result = backtester.run_backtest(strategy)
 
-# Affichage des résultats
+# Display results
 print(result.summary())
-result.plot_performance()
+result.plot_performance(backend='matplotlib')
 ```
 
-## Création de stratégies personnalisées
+### Creating Custom Strategies
 
-### Méthode 1 : Héritage de la classe Strategy
+**Method 1: Class Inheritance**
 
 ```python
 from backtesting_framework import Strategy
 
-class CustomStrategy(Strategy):
-    def __init__(self):
-        super().__init__("Ma Stratégie Custom")
+class RSIStrategy(Strategy):
+    def __init__(self, window=14, oversold=30, overbought=70):
+        self.window = window
+        self.oversold = oversold
+        self.overbought = overbought
+        self.is_fitted = False
+        self.rebalance_frequency = 'D'
     
-    def get_position(self, historical_data, current_position):
-        # Votre logique ici
-        if len(historical_data) < 20:
-            return 0
+    @property
+    def name(self):
+        return f"RSI Strategy ({self.window}, {self.oversold}, {self.overbought})"
+    
+    def fit(self, historical_data):
+        self.is_fitted = True
+    
+    def get_position(self, data, positions):
+        if len(data) < self.window + 5:
+            return {'asset': 0.0}
         
-        # Exemple : stratégie RSI
-        rsi = calculate_rsi(historical_data['close'])
-        if rsi < 30:
-            return 1.0  # Achat
-        elif rsi > 70:
-            return -1.0  # Vente
+        rsi = self.calculate_rsi(data['close'], self.window)
+        
+        if rsi < self.oversold:
+            return {'asset': 1.0}  # Buy (oversold)
+        elif rsi > self.overbought:
+            return {'asset': 0.0}  # Sell (overbought)
         else:
-            return 0.0  # Neutre
+            return positions  # Keep current position
 ```
 
-### Méthode 2 : Décorateur pour stratégies simples
+**Method 2: Decorator for Simple Strategies**
 
 ```python
 from backtesting_framework import strategy_decorator
 
-@strategy_decorator(name="Ma Stratégie Simple")
+@strategy_decorator(name="Simple MA Strategy")
 def simple_strategy(historical_data, current_position):
     if len(historical_data) < 10:
         return 0
     
-    # Logique simple de moyenne mobile
+    # Simple moving average logic
     short_ma = historical_data['close'].rolling(5).mean().iloc[-1]
     long_ma = historical_data['close'].rolling(10).mean().iloc[-1]
     
     return 1 if short_ma > long_ma else -1
 ```
 
-## Comparaison de stratégies
+### Comparing Multiple Strategies
 
 ```python
 from backtesting_framework import compare_results
 
-# Création de plusieurs stratégies
+# Create multiple strategies
 buy_hold = BuyAndHoldStrategy()
-ma_cross = MovingAverageCrossStrategy(5, 20)
-custom = CustomStrategy()
+ma_cross = MovingAverageCrossStrategy(short_window=5, long_window=20)
+rsi = RSIStrategy()
 
-# Exécution des backtests
+# Run backtests
 result1 = backtester.run_backtest(buy_hold)
 result2 = backtester.run_backtest(ma_cross)
-result3 = backtester.run_backtest(custom)
+result3 = backtester.run_backtest(rsi)
 
-# Comparaison
-compare_results(result1, result2, result3, backend='plotly')
+# Compare visually
+compare_results(result1, result2, result3, backend='matplotlib')
 ```
 
-## Stratégies intégrées
+For detailed examples including walk-forward analysis, parameter optimization, and advanced visualizations, see `examples/example_usage.ipynb`.
 
-### Stratégies prêtes à l'emploi
-- **BuyAndHoldStrategy** : Stratégie passive d'achat-conservation
-- **MovingAverageCrossStrategy** : Croisement de moyennes mobiles
-- **MeanReversionStrategy** : Retour à la moyenne avec bandes de Bollinger
-
-### Exemples de stratégies personnalisées
-- **RSIStrategy** : Basée sur l'indicateur RSI
-- **MomentumStrategy** : Stratégie de momentum avec décorateur
-- **SimpleMLStrategy** : Stratégie avec features techniques
-
-## Métriques disponibles
-
-- **Performance** : Rendement total, annualisé
-- **Risque** : Volatilité, VaR, drawdown maximum
-- **Ratios** : Sharpe, Sortino, Calmar
-- **Analyse vs benchmark** : Alpha, Beta, corrélation
-- **Trading** : Nombre de trades, % trades gagnants, coûts de transaction
-
-## Technologies utilisées
-
-- **Python 3.8+** : Langage principal
-- **pandas** : Manipulation de données financières
-- **numpy** : Calculs numériques optimisés
-- **matplotlib/seaborn/plotly** : Visualisations interactives
-- **pytest** : Tests unitaires (51 tests couvrant tous les composants)
-- **setuptools** : Packaging professionnel
-
-## Architecture orientée objet
-
-- **Polymorphisme** : Interface Strategy commune pour toutes les stratégies
-- **Encapsulation** : Données et méthodes groupées logiquement
-- **Héritage** : Stratégies héritent de la classe abstraite Strategy
-- **Abstraction** : Complexité cachée derrière une API simple
-
-## Structure du projet
+## Project Structure
 
 ```
 backtesting_framework/
-├── __init__.py          # Point d'entrée du package
-├── strategy.py          # Classes Strategy et décorateurs
-├── backtester.py        # Moteur de backtesting
-└── result.py           # Analyse et visualisation des résultats
-
-tests/                   # Tests unitaires
-examples/               # Notebooks d'exemple
-pyproject.toml          # Configuration du package
+├── backtesting_framework/
+│   ├── __init__.py              # Package exports and initialization
+│   ├── strategy.py              # Abstract Strategy class and decorators
+│   ├── backtester.py            # Core backtesting engine
+│   ├── result.py                # Results analysis and visualization
+│   └── data_handler.py          # Data loading and validation utilities
+│
+├── examples/
+│   ├── strategies/              # Built-in strategy implementations
+│   │   ├── buy_and_hold.py
+│   │   ├── moving_average_cross.py
+│   │   └── mean_reversion.py
+│   └── example_usage.ipynb      # Comprehensive usage demonstration
+│
+├── tests/
+│   ├── test_backtester.py       # Backtester unit tests
+│   ├── test_strategy.py         # Strategy tests
+│   ├── test_result.py           # Results analysis tests
+│   └── test_multi_asset.py      # Multi-asset support tests
+│
+├── pyproject.toml               # Package configuration and dependencies
+├── README.md                    # Project documentation
+└── LICENSE                      # MIT License
 ```
 
-## Formats de données supportés
+## Methodology Summary
 
-Le framework accepte :
-- **DataFrames pandas** avec colonnes : date (index), close (obligatoire), open, high, low, volume (optionnelles)
-- **Fichiers CSV** avec les mêmes colonnes
-- **Fichiers Parquet** avec les mêmes colonnes
+### Object-Oriented Architecture
 
-Exemple de format attendu :
-```
-date,open,high,low,close,volume
-2023-01-01,100.0,102.0,99.0,101.0,1000000
-2023-01-02,101.0,103.0,100.5,102.5,1200000
-...
-```
+The framework implements core object-oriented programming principles:
 
-## Configuration avancée
+- **Abstraction**: The abstract `Strategy` class defines the interface all strategies must implement, hiding implementation complexity behind a simple API.
+- **Inheritance**: Custom strategies inherit from `Strategy`, gaining access to common functionality while implementing specific trading logic.
+- **Polymorphism**: All strategies share the same interface (`get_position`, `fit`), allowing the `Backtester` to work with any strategy implementation.
+- **Encapsulation**: Each class encapsulates its data and methods, exposing only necessary interfaces.
 
-```python
-# Configuration personnalisée du backtester
-backtester = Backtester(
-    data='data.csv',
-    initial_capital=100000,
-    transaction_cost=0.001,  # 0.1% par trade
-    slippage=0.0001         # 0.01% de slippage
-)
+### Backtesting Process
 
-# Stratégie avec fréquence de rééquilibrage
-strategy = MovingAverageCrossStrategy(
-    short_window=10, 
-    long_window=30,
-    rebalance_frequency='W'  # Hebdomadaire
-)
+1. **Data Preparation**: Load and validate historical data (OHLCV format)
+2. **Strategy Initialization**: Configure strategy parameters and training
+3. **Simulation Loop**: Iterate through historical data, generating positions
+4. **Position Management**: Apply transaction costs, slippage, and rebalancing
+5. **Metrics Calculation**: Compute comprehensive performance statistics
+6. **Visualization**: Generate interactive charts and comparison plots
 
-# Backtest sur période spécifique
-result = backtester.run_backtest(
-    strategy,
-    start_date='2023-01-01',
-    end_date='2023-12-31',
-    benchmark='SPY'  # Colonne benchmark
-)
-```
+### Performance Metrics
 
-## Tests
+The framework calculates 15+ performance metrics:
 
-```bash
-pytest tests/
-```
+- **Returns**: Total, annualized, cumulative
+- **Risk Measures**: Volatility, Value at Risk (VaR), maximum drawdown
+- **Risk-Adjusted Ratios**: Sharpe, Sortino, Calmar
+- **Benchmark Analysis**: Alpha, Beta, correlation
+- **Trading Statistics**: Number of trades, win rate, transaction costs
 
-Avec couverture :
-```bash
-pytest tests/ --cov=backtesting_framework
-```
+### Testing Strategy
 
-## Exemple complet
+Comprehensive test coverage includes:
 
-Voir le notebook `examples/example_usage.ipynb` pour un exemple complet d'utilisation du framework.
+- **Unit Tests**: Individual component validation
+- **Integration Tests**: Cross-component interaction verification
+- **Multi-Asset Tests**: Portfolio strategy validation
+- **Edge Cases**: Boundary condition handling
+
+## Reports
+
+### Key Deliverables
+
+- **Technical Implementation**: Complete source code with modular architecture
+- **Documentation**: Comprehensive README, docstrings, and inline comments
+- **Example Notebook**: Detailed Jupyter notebook (`example_usage.ipynb`) demonstrating:
+  - Data loading from Yahoo Finance
+  - Built-in strategy testing (Buy & Hold, MA Cross, Mean Reversion)
+  - Custom strategy creation (RSI, Momentum, Simple ML)
+  - Performance comparison and visualization
+  - Walk-forward analysis and parameter optimization
+  - Professional conclusions and insights
+
+- **Test Suite**: Unit and integration tests covering all components
+- **Package Configuration**: Professional `pyproject.toml` enabling pip installation
+
+### Performance Results
+
+Testing on Apple (AAPL) stock from 2020-2023 yielded:
+
+| Strategy | Total Return | Sharpe Ratio | Max Drawdown | Trades |
+|----------|--------------|--------------|--------------|--------|
+| Momentum | 151.55% | 1.21 | -51.35% | 1005 |
+| Simple ML | 19.06% | 0.29 | -32.37% | 1005 |
+| RSI | 2.47% | 0.02 | -34.82% | 1005 |
+
+Results demonstrate the framework's capability to differentiate strategy performance and provide actionable insights for investment decision-making.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Authors / Contact
+
+**M2 Quantitative Finance - Université Paris Dauphine-PSL**
+
+* [Mariano BENJAMIN](mailto:mariano.benjamin@dauphine.eu)
+* [Noah CHIKHI](mailto:noah.chikhi@dauphine.eu)
+* [Antoine Moniz](mailto:antoine.moniz@dauphine.eu)
+
+For issues, discussions, or contributions, please open an issue or pull request on the project's GitHub page

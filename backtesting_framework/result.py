@@ -1,5 +1,29 @@
-"""
-Module contenant la classe Result pour analyser et visualiser les résultats de backtest.
+"""Performance analysis and visualization toolkit.
+
+This module provides the `Result` class for analyzing backtest outcomes and
+the `compare_results` function for multi-strategy comparison. The Result class
+calculates key performance metrics (returns, Sharpe ratio, drawdowns) and
+generates visualizations using multiple backends (matplotlib, seaborn, plotly).
+
+The module supports both single-strategy analysis and side-by-side comparison
+of multiple strategies, making it easy to evaluate and select the best performing
+approaches.
+
+Notes
+-----
+Performance metrics are calculated using standard financial formulas. The Sharpe
+ratio assumes 252 trading days per year for annualization. Maximum drawdown is
+computed as the largest peak-to-trough decline in cumulative returns.
+
+Visualization backends can be selected via the `backend` parameter. If a requested
+backend is unavailable, the module falls back to matplotlib or raises an error if
+no visualization library is installed.
+
+Authors
+-------
+Mariano Benjamin
+Noah Chikhi
+Antoine Moniz
 """
 
 import pandas as pd
@@ -7,7 +31,7 @@ import numpy as np
 from typing import List, Dict, Any, Optional, Union
 import warnings
 
-# Imports pour les visualisations
+# Visualization imports
 try:
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
@@ -15,7 +39,7 @@ try:
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
-    warnings.warn("Matplotlib non disponible. Les visualisations seront limitées.")
+    warnings.warn("Matplotlib not available. Visualizations will be limited.")
 
 try:
     import seaborn as sns
@@ -34,59 +58,74 @@ except ImportError:
 
 class Result:
     """
-    Classe pour analyser et visualiser les résultats d'un backtest.
+    Class for analyzing and visualizing backtest results.
     
-    Cette classe contient toutes les métriques de performance et les méthodes
-    de visualisation pour analyser les résultats d'une stratégie.
+    This class contains all performance metrics and visualization methods
+    for analyzing strategy results.
     """
     
-    def __init__(self, strategy, results_df: pd.DataFrame, trades: List[Dict],
-                 initial_capital: float, transaction_cost: float, slippage: float):
+    def __init__(self, strategy, results_df: pd.DataFrame,
+                 initial_capital: float,
+                 trades: Optional[List[Dict]] = None,
+                 transaction_cost: float = 0.0,
+                 slippage: float = 0.0,
+                 asset_symbols: Optional[List[str]] = None):
         """
-        Initialise l'objet Result.
+        Initialize the Result object.
         
-        Args:
-            strategy: La stratégie utilisée
-            results_df (pd.DataFrame): DataFrame avec les résultats du backtest
-            trades (List[Dict]): Liste des trades exécutés
-            initial_capital (float): Capital initial
-            transaction_cost (float): Coût de transaction
-            slippage (float): Slippage
+        Parameters
+        ----------
+        strategy : Strategy
+            Strategy used for the backtest.
+        results_df : pd.DataFrame
+            DataFrame with backtest results.
+        trades : List[Dict]
+            List of executed trades.
+        initial_capital : float
+            Initial capital.
+        transaction_cost : float
+            Transaction cost.
+        slippage : float
+            Slippage.
+        asset_symbols : List[str], optional
+            List of asset symbols in the portfolio.
         """
         self.strategy = strategy
         self.results_df = results_df
-        self.trades = trades
+        self.trades = trades or []
         self.initial_capital = initial_capital
         self.transaction_cost = transaction_cost
         self.slippage = slippage
+        self.asset_symbols = asset_symbols or ['asset']
+        self.is_multi_asset = len(self.asset_symbols) > 1
         
-        # Calcul des métriques
-        self._calculate_metrics()
+        # Calculate metrics
+        self.calculate_metrics()
     
-    def _calculate_metrics(self):
-        """Calcule toutes les métriques de performance."""
+    def calculate_metrics(self):
+        """Calculate all performance metrics."""
         self.metrics = {}
         
-        # Données de base
+        # Base data
         returns = self.results_df['returns'].dropna()
         portfolio_values = self.results_df['portfolio_value']
         benchmark_returns = self.results_df['benchmark_returns'].dropna()
         
-        # Performance totale
+        # Total performance
         self.metrics['total_return'] = (portfolio_values.iloc[-1] / self.initial_capital) - 1
         self.metrics['benchmark_total_return'] = (self.results_df['benchmark_cumulative'].iloc[-1])
         
-        # Performance annualisée
+        # Annualized performance
         days = len(returns)
-        years = days / 252  # 252 jours de trading par an
+        years = days / 252  # 252 trading days per year
         self.metrics['annualized_return'] = (1 + self.metrics['total_return']) ** (1/years) - 1
         self.metrics['benchmark_annualized_return'] = (1 + self.metrics['benchmark_total_return']) ** (1/years) - 1
         
-        # Volatilité
-        self.metrics['volatility'] = returns.std() * np.sqrt(252)  # Annualisée
+        # Volatility
+        self.metrics['volatility'] = returns.std() * np.sqrt(252)  # Annualized
         self.metrics['benchmark_volatility'] = benchmark_returns.std() * np.sqrt(252)
         
-        # Ratio de Sharpe (on assume un taux sans risque de 0)
+        # Sharpe Ratio (assuming risk-free rate of 0)
         if self.metrics['volatility'] > 0:
             self.metrics['sharpe_ratio'] = self.metrics['annualized_return'] / self.metrics['volatility']
         else:
@@ -103,13 +142,13 @@ class Result:
         drawdowns = cumulative_returns - rolling_max
         self.metrics['max_drawdown'] = drawdowns.min()
         
-        # Calcul du drawdown du benchmark
+        # Benchmark drawdown calculation
         benchmark_cumulative = self.results_df['benchmark_cumulative']
         benchmark_rolling_max = benchmark_cumulative.expanding().max()
         benchmark_drawdowns = benchmark_cumulative - benchmark_rolling_max
         self.metrics['benchmark_max_drawdown'] = benchmark_drawdowns.min()
         
-        # Ratio de Sortino (downside deviation)
+        # Sortino ratio (downside deviation)
         negative_returns = returns[returns < 0]
         if len(negative_returns) > 0:
             downside_std = negative_returns.std() * np.sqrt(252)
@@ -120,18 +159,18 @@ class Result:
         else:
             self.metrics['sortino_ratio'] = float('inf') if self.metrics['annualized_return'] > 0 else 0
         
-        # Statistiques des trades
+        # Trade statistics
         if self.trades:
             trade_df = pd.DataFrame(self.trades)
             self.metrics['num_trades'] = len(self.trades)
             
-            # Calcul des gains/pertes par trade
+            # Calculate gains/losses per trade
             trade_returns = []
             for i in range(1, len(self.trades)):
                 prev_trade = self.trades[i-1]
                 curr_trade = self.trades[i]
                 if prev_trade['position_after'] != 0:
-                    # Calcul du rendement entre les trades
+                    # Calculate return between trades
                     price_change = (curr_trade['price'] - prev_trade['effective_price']) / prev_trade['effective_price']
                     trade_return = price_change * prev_trade['position_after']
                     trade_returns.append(trade_return)
@@ -144,7 +183,7 @@ class Result:
                 self.metrics['winning_trades_pct'] = 0
                 self.metrics['avg_trade_return'] = 0
                 
-            # Coûts de transaction totaux
+            # Total transaction costs
             total_transaction_costs = sum(trade['transaction_cost'] for trade in self.trades)
             self.metrics['total_transaction_costs'] = total_transaction_costs
             self.metrics['transaction_costs_pct'] = total_transaction_costs / self.initial_capital * 100
@@ -155,7 +194,7 @@ class Result:
             self.metrics['total_transaction_costs'] = 0
             self.metrics['transaction_costs_pct'] = 0
         
-        # Informations Beta et Alpha vs benchmark
+        # Beta and Alpha information vs benchmark
         if len(returns) > 1 and len(benchmark_returns) > 1:
             covariance = np.cov(returns, benchmark_returns)[0, 1]
             benchmark_variance = np.var(benchmark_returns)
@@ -168,29 +207,33 @@ class Result:
         else:
             self.metrics['beta'] = 0
             self.metrics['alpha'] = self.metrics['annualized_return']
+        
+        return self.metrics
     
     def summary(self) -> pd.DataFrame:
         """
-        Retourne un résumé des métriques de performance.
+        Return a summary of performance metrics.
         
-        Returns:
-            pd.DataFrame: Table résumant les principales métriques
+        Returns
+        -------
+        pd.DataFrame
+            Table summarizing key metrics.
         """
         summary_data = {
-            'Métrique': [
-                'Rendement Total (%)',
-                'Rendement Annualisé (%)',
-                'Volatilité Annualisée (%)',
-                'Ratio de Sharpe',
-                'Ratio de Sortino',
-                'Drawdown Maximum (%)',
+            'Metric': [
+                'Total Return (%)',
+                'Annualized Return (%)',
+                'Annualized Volatility (%)',
+                'Sharpe Ratio',
+                'Sortino Ratio',
+                'Maximum Drawdown (%)',
                 'Beta vs Benchmark',
                 'Alpha vs Benchmark (%)',
-                'Nombre de Trades',
-                '% Trades Gagnants',
-                'Coûts de Transaction (%)' 
+                'Number of Trades',
+                '% Winning Trades',
+                'Transaction Costs (%)' 
             ],
-            'Stratégie': [
+            'Strategy': [
                 f"{self.metrics['total_return']:.2%}",
                 f"{self.metrics['annualized_return']:.2%}",
                 f"{self.metrics['volatility']:.2%}",
@@ -222,34 +265,37 @@ class Result:
     
     def plot_performance(self, backend: str = 'matplotlib', figsize: tuple = (12, 8)):
         """
-        Trace la performance de la stratégie vs benchmark.
+        Plot strategy performance vs benchmark.
         
-        Args:
-            backend (str): Backend de visualisation ('matplotlib', 'seaborn', 'plotly')
-            figsize (tuple): Taille de la figure pour matplotlib/seaborn
+        Parameters
+        ----------
+        backend : str, default='matplotlib'
+            Visualization backend ('matplotlib', 'seaborn', 'plotly').
+        figsize : tuple, default=(12, 8)
+            Figure size for matplotlib/seaborn.
         """
         if backend == 'plotly' and PLOTLY_AVAILABLE:
             return self._plot_performance_plotly()
         elif backend in ['matplotlib', 'seaborn'] and MATPLOTLIB_AVAILABLE:
             return self._plot_performance_matplotlib(figsize, use_seaborn=(backend=='seaborn'))
         else:
-            print(f"Backend '{backend}' non disponible. Backends disponibles: {self.get_available_backends()}")
+            print(f"Backend '{backend}' not available. Available backends: {self.get_available_backends()}")
             return None
     
     def _plot_performance_matplotlib(self, figsize: tuple, use_seaborn: bool = False):
-        """Trace avec matplotlib/seaborn."""
+        """Plot with matplotlib/seaborn."""
         if use_seaborn and SEABORN_AVAILABLE:
             sns.set_style("whitegrid")
         
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=figsize)
         
-        # Performance cumulative
+        # Cumulative performance
         ax1.plot(self.results_df.index, (1 + self.results_df['cumulative_returns']) * 100, 
                 label=f'{self.strategy.name}', linewidth=2)
         ax1.plot(self.results_df.index, (1 + self.results_df['benchmark_cumulative']) * 100, 
                 label='Benchmark', linewidth=2, alpha=0.7)
-        ax1.set_title('Performance Cumulative')
-        ax1.set_ylabel('Valeur du Portefeuille (%)')
+        ax1.set_title('Cumulative Performance')
+        ax1.set_ylabel('Portfolio Value (%)')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
@@ -263,20 +309,20 @@ class Result:
         ax2.set_ylabel('Drawdown (%)')
         ax2.grid(True, alpha=0.3)
         
-        # Distribution des rendements
+        # Returns distribution
         returns = self.results_df['returns'].dropna() * 100
         ax3.hist(returns, bins=50, alpha=0.7, edgecolor='black')
-        ax3.axvline(returns.mean(), color='red', linestyle='--', label=f'Moyenne: {returns.mean():.2f}%')
-        ax3.set_title('Distribution des Rendements Quotidiens')
-        ax3.set_xlabel('Rendement (%)')
-        ax3.set_ylabel('Fréquence')
+        ax3.axvline(returns.mean(), color='red', linestyle='--', label=f'Mean: {returns.mean():.2f}%')
+        ax3.set_title('Daily Returns Distribution')
+        ax3.set_xlabel('Return (%)')
+        ax3.set_ylabel('Frequency')
         ax3.legend()
         ax3.grid(True, alpha=0.3)
         
-        # Positions dans le temps
+        # Positions over time
         ax4.plot(self.results_df.index, self.results_df['position'], linewidth=1)
-        ax4.set_title('Positions de la Stratégie')
-        ax4.set_ylabel('Position (-1 à 1)')
+        ax4.set_title('Strategy Positions')
+        ax4.set_ylabel('Position (-1 to 1)')
         ax4.set_ylim(-1.1, 1.1)
         ax4.grid(True, alpha=0.3)
         
@@ -286,11 +332,11 @@ class Result:
         return fig
     
     def _plot_performance_plotly(self):
-        """Trace avec plotly."""
+        """Plot with plotly."""
         fig = make_subplots(
             rows=2, cols=2,
-            subplot_titles=('Performance Cumulative', 'Drawdown', 
-                          'Distribution des Rendements', 'Positions'),
+            subplot_titles=('Cumulative Performance', 'Drawdown', 
+                          'Returns Distribution', 'Positions'),
             specs=[[{"secondary_y": False}, {"secondary_y": False}],
                    [{"secondary_y": False}, {"secondary_y": False}]]
         )
@@ -332,13 +378,13 @@ class Result:
             row=1, col=2
         )
         
-        # Distribution des rendements
+        # Returns distribution
         returns = self.results_df['returns'].dropna() * 100
         fig.add_trace(
             go.Histogram(
                 x=returns,
                 nbinsx=50,
-                name='Rendements',
+                name='Returns',
                 opacity=0.7
             ),
             row=2, col=1
@@ -355,19 +401,160 @@ class Result:
             row=2, col=2
         )
         
-        fig.update_layout(height=600, showlegend=True, title_text="Analyse de Performance")
+        fig.update_layout(height=600, showlegend=True, title_text="Performance Analysis")
         fig.show()
         return fig
     
+    def plot_positions(self, backend: str = 'matplotlib', figsize: tuple = (12, 6)):
+        """
+        Plot per-asset position allocation over time.
+        
+        Parameters
+        ----------
+        backend : str, default='matplotlib'
+            Visualization backend ('matplotlib', 'seaborn', 'plotly').
+        figsize : tuple, default=(12, 6)
+            Figure size for matplotlib/seaborn.
+        """
+        if not self.is_multi_asset:
+            print("Single-asset portfolio. Use plot_performance() to view position.")
+            return None
+        
+        if backend == 'plotly' and PLOTLY_AVAILABLE:
+            return self._plot_positions_plotly()
+        elif backend in ['matplotlib', 'seaborn'] and MATPLOTLIB_AVAILABLE:
+            return self._plot_positions_matplotlib(figsize, use_seaborn=(backend=='seaborn'))
+        else:
+            print(f"Backend '{backend}' not available.")
+            return None
+    
+    def _plot_positions_matplotlib(self, figsize: tuple, use_seaborn: bool = False):
+        """Plot per-asset positions with matplotlib/seaborn."""
+        if use_seaborn and SEABORN_AVAILABLE:
+            sns.set_style("whitegrid")
+        
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
+        
+        # Stacked area chart of positions
+        position_cols = [f'position_{symbol}' for symbol in self.asset_symbols]
+        position_data = self.results_df[position_cols]
+        
+        # Rename columns for legend
+        position_data.columns = self.asset_symbols
+        
+        # Plot stacked area
+        position_data.plot.area(ax=ax1, alpha=0.7, stacked=True)
+        ax1.set_title('Asset Position Allocation Over Time')
+        ax1.set_ylabel('Position Allocation')
+        ax1.legend(loc='upper left', title='Assets')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_ylim(-1.1, 1.1)
+        
+        # Individual position lines
+        for symbol in self.asset_symbols:
+            ax2.plot(self.results_df.index, self.results_df[f'position_{symbol}'], 
+                    label=symbol, linewidth=2)
+        
+        ax2.set_title('Individual Asset Positions')
+        ax2.set_ylabel('Position (-1 to 1)')
+        ax2.set_xlabel('Date')
+        ax2.legend(loc='upper left')
+        ax2.grid(True, alpha=0.3)
+        ax2.axhline(y=0, color='black', linestyle='--', alpha=0.3)
+        
+        plt.tight_layout()
+        if plt.get_backend() != 'Agg':
+            plt.show()
+        return fig
+    
+    def _plot_positions_plotly(self):
+        """Plot per-asset positions with plotly."""
+        fig = make_subplots(
+            rows=2, cols=1,
+            subplot_titles=('Asset Position Allocation', 'Individual Asset Positions'),
+            vertical_spacing=0.12
+        )
+        
+        # Stacked area chart
+        for symbol in self.asset_symbols:
+            fig.add_trace(
+                go.Scatter(
+                    x=self.results_df.index,
+                    y=self.results_df[f'position_{symbol}'],
+                    name=symbol,
+                    stackgroup='one',
+                    mode='none',
+                    fillcolor=None
+                ),
+                row=1, col=1
+            )
+        
+        # Individual lines
+        for symbol in self.asset_symbols:
+            fig.add_trace(
+                go.Scatter(
+                    x=self.results_df.index,
+                    y=self.results_df[f'position_{symbol}'],
+                    name=symbol,
+                    line=dict(width=2),
+                    showlegend=False
+                ),
+                row=2, col=1
+            )
+        
+        fig.update_xaxes(title_text="Date", row=2, col=1)
+        fig.update_yaxes(title_text="Position Allocation", row=1, col=1)
+        fig.update_yaxes(title_text="Position (-1 to 1)", row=2, col=1)
+        
+        fig.update_layout(height=600, showlegend=True, title_text="Multi-Asset Position Analysis")
+        fig.show()
+        return fig
+    
+    def get_position_summary(self) -> pd.DataFrame:
+        """
+        Get summary statistics for each asset's position allocation.
+        
+        Returns
+        -------
+        pd.DataFrame
+            Summary statistics per asset.
+        """
+        if not self.is_multi_asset:
+            return pd.DataFrame({
+                'Asset': [self.asset_symbols[0]],
+                'Mean Position': [self.results_df['position'].mean()],
+                'Min Position': [self.results_df['position'].min()],
+                'Max Position': [self.results_df['position'].max()],
+                'Position Std': [self.results_df['position'].std()]
+            })
+        
+        summary_data = []
+        for symbol in self.asset_symbols:
+            pos_col = f'position_{symbol}'
+            summary_data.append({
+                'Asset': symbol,
+                'Mean Position': self.results_df[pos_col].mean(),
+                'Min Position': self.results_df[pos_col].min(),
+                'Max Position': self.results_df[pos_col].max(),
+                'Position Std': self.results_df[pos_col].std(),
+                '% Time Long': (self.results_df[pos_col] > 0).sum() / len(self.results_df) * 100,
+                '% Time Short': (self.results_df[pos_col] < 0).sum() / len(self.results_df) * 100,
+                '% Time Neutral': (self.results_df[pos_col] == 0).sum() / len(self.results_df) * 100
+            })
+        
+        return pd.DataFrame(summary_data)
+    
     def plot_trades(self, backend: str = 'matplotlib'):
         """
-        Visualise les points d'entrée et de sortie des trades.
+        Visualize entry and exit points of trades.
         
-        Args:
-            backend (str): Backend de visualisation
+        Parameters
+        ----------
+        backend : str, default='matplotlib'
+            Visualization backend.
         """
         if not self.trades:
-            print("Aucun trade à visualiser.")
+            print("No trades to visualize.")
             return None
             
         if backend == 'plotly' and PLOTLY_AVAILABLE:
@@ -375,18 +562,18 @@ class Result:
         elif backend == 'matplotlib' and MATPLOTLIB_AVAILABLE:
             return self._plot_trades_matplotlib()
         else:
-            print(f"Backend '{backend}' non disponible.")
+            print(f"Backend '{backend}' not available.")
             return None
     
     def _plot_trades_matplotlib(self):
-        """Trace les trades avec matplotlib."""
+        """Plot trades with matplotlib."""
         fig, ax = plt.subplots(figsize=(12, 6))
         
-        # Prix
+        # Price
         ax.plot(self.results_df.index, self.results_df['close'], 
-               label='Prix', linewidth=1, color='blue')
+               label='Price', linewidth=1, color='blue')
         
-        # Points de trade
+        # Trade points
         trade_dates = [trade['date'] for trade in self.trades]
         trade_prices = [trade['price'] for trade in self.trades]
         trade_colors = ['green' if trade['position_after'] > trade['position_before'] 
@@ -394,8 +581,8 @@ class Result:
         
         ax.scatter(trade_dates, trade_prices, c=trade_colors, s=50, alpha=0.7, zorder=5)
         
-        ax.set_title('Points d\'Entrée et de Sortie des Trades')
-        ax.set_ylabel('Prix')
+        ax.set_title('Trade Entry and Exit Points')
+        ax.set_ylabel('Price')
         ax.legend()
         ax.grid(True, alpha=0.3)
         
@@ -405,43 +592,43 @@ class Result:
         return fig
     
     def _plot_trades_plotly(self):
-        """Trace les trades avec plotly."""
+        """Plot trades with plotly."""
         fig = go.Figure()
         
-        # Prix
+        # Price
         fig.add_trace(go.Scatter(
             x=self.results_df.index,
             y=self.results_df['close'],
-            name='Prix',
+            name='Price',
             line=dict(width=1, color='blue')
         ))
         
-        # Trades d'achat
+        # Buy trades
         buy_trades = [trade for trade in self.trades if trade['position_after'] > trade['position_before']]
         if buy_trades:
             fig.add_trace(go.Scatter(
                 x=[trade['date'] for trade in buy_trades],
                 y=[trade['price'] for trade in buy_trades],
                 mode='markers',
-                name='Achat',
+                name='Buy',
                 marker=dict(color='green', size=8)
             ))
         
-        # Trades de vente
+        # Sell trades
         sell_trades = [trade for trade in self.trades if trade['position_after'] < trade['position_before']]
         if sell_trades:
             fig.add_trace(go.Scatter(
                 x=[trade['date'] for trade in sell_trades],
                 y=[trade['price'] for trade in sell_trades],
                 mode='markers',
-                name='Vente',
+                name='Sell',
                 marker=dict(color='red', size=8)
             ))
         
         fig.update_layout(
-            title='Points d\'Entrée et de Sortie des Trades',
+            title='Trade Entry and Exit Points',
             xaxis_title='Date',
-            yaxis_title='Prix'
+            yaxis_title='Price'
         )
         
         fig.show()
@@ -449,7 +636,7 @@ class Result:
     
     @staticmethod
     def get_available_backends() -> List[str]:
-        """Retourne la liste des backends disponibles."""
+        """Return the list of available backends."""
         backends = []
         if MATPLOTLIB_AVAILABLE:
             backends.append('matplotlib')
@@ -468,72 +655,77 @@ class Result:
 
 def compare_results(*results: Result, backend: str = 'matplotlib') -> Union[Figure, Any]:
     """
-    Compare les résultats de plusieurs stratégies.
+    Compare results from multiple strategies.
     
-    Args:
-        *results: Instances de Result à comparer
-        backend (str): Backend de visualisation
+    Parameters
+    ----------
+    *results : Result
+        Result instances to compare.
+    backend : str, default='matplotlib'
+        Visualization backend.
         
-    Returns:
-        Figure ou objet plotly selon le backend
+    Returns
+    -------
+    Figure or plotly object
+        Comparison visualization.
     """
     if len(results) < 2:
-        raise ValueError("Au moins 2 résultats sont nécessaires pour la comparaison")
+        raise ValueError("At least 2 results are required for comparison")
     
     if backend == 'plotly' and PLOTLY_AVAILABLE:
         return _compare_results_plotly(results)
     elif backend in ['matplotlib', 'seaborn'] and MATPLOTLIB_AVAILABLE:
         return _compare_results_matplotlib(results, use_seaborn=(backend=='seaborn'))
     else:
-        print(f"Backend '{backend}' non disponible.")
+        print(f"Backend '{backend}' not available.")
         return None
 
 
 def _compare_results_matplotlib(results: tuple, use_seaborn: bool = False):
-    """Compare avec matplotlib/seaborn."""
+    """Compare with matplotlib/seaborn."""
     if use_seaborn and SEABORN_AVAILABLE:
         sns.set_style("whitegrid")
     
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
     
-    # Performance cumulative
+    # Cumulative performance
     for result in results:
         cumulative = (1 + result.results_df['cumulative_returns']) * 100
         ax1.plot(result.results_df.index, cumulative, 
                 label=result.strategy.name, linewidth=2)
     
-    ax1.set_title('Comparaison des Performances Cumulatives')
-    ax1.set_ylabel('Valeur du Portefeuille (%)')
+    ax1.set_title('Cumulative Performance Comparison')
+    ax1.set_ylabel('Portfolio Value (%)')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     
-    # Comparaison des métriques
+    # Metrics comparison
     metrics_comparison = []
     for result in results:
         metrics_comparison.append({
-            'Stratégie': result.strategy.name,
-            'Rendement Total': result.metrics['total_return'],
+            'Strategy': result.strategy.name,
+            'Total Return': result.metrics['total_return'],
             'Sharpe Ratio': result.metrics['sharpe_ratio'],
             'Max Drawdown': result.metrics['max_drawdown']
         })
     
     df_metrics = pd.DataFrame(metrics_comparison)
     
-    # Graphique en barres des rendements
-    ax2.bar(df_metrics['Stratégie'], df_metrics['Rendement Total'] * 100)
-    ax2.set_title('Rendements Totaux (%)')
-    ax2.set_ylabel('Rendement (%)')
+    # Bar chart of returns
+    ax2.bar(df_metrics['Strategy'], df_metrics['Total Return'] * 100)
+    ax2.set_title('Total Returns (%)')
+    ax2.set_ylabel('Return (%)')
     ax2.tick_params(axis='x', rotation=45)
     
-    # Graphique en barres des ratios de Sharpe
-    ax3.bar(df_metrics['Stratégie'], df_metrics['Sharpe Ratio'])
-    ax3.set_title('Ratios de Sharpe')
-    ax3.set_ylabel('Ratio de Sharpe')
+    # Bar chart of Sharpe ratios
+    ax3.bar(df_metrics['Strategy'], df_metrics['Sharpe Ratio'])
+    ax3.set_title('Sharpe Ratios')
+    ax3.set_ylabel('Sharpe Ratio')
     ax3.tick_params(axis='x', rotation=45)
     
-    # Graphique en barres des drawdowns
-    ax4.bar(df_metrics['Stratégie'], df_metrics['Max Drawdown'] * 100)
-    ax4.set_title('Drawdowns Maximum (%)')
+    # Bar chart of drawdowns
+    ax4.bar(df_metrics['Strategy'], df_metrics['Max Drawdown'] * 100)
+    ax4.set_title('Maximum Drawdowns (%)')
     ax4.set_ylabel('Drawdown (%)')
     ax4.tick_params(axis='x', rotation=45)
     
@@ -544,16 +736,16 @@ def _compare_results_matplotlib(results: tuple, use_seaborn: bool = False):
 
 
 def _compare_results_plotly(results: tuple):
-    """Compare avec plotly."""
+    """Compare with plotly."""
     fig = make_subplots(
         rows=2, cols=2,
-        subplot_titles=('Performance Cumulative', 'Rendements Totaux', 
-                       'Ratios de Sharpe', 'Drawdowns Maximum'),
+        subplot_titles=('Cumulative Performance', 'Total Returns', 
+                       'Sharpe Ratios', 'Maximum Drawdowns'),
         specs=[[{"secondary_y": False}, {"secondary_y": False}],
                [{"secondary_y": False}, {"secondary_y": False}]]
     )
     
-    # Performance cumulative
+    # Cumulative performance
     for result in results:
         cumulative = (1 + result.results_df['cumulative_returns']) * 100
         fig.add_trace(
@@ -566,14 +758,14 @@ def _compare_results_plotly(results: tuple):
             row=1, col=1
         )
     
-    # Métriques en barres
+    # Bar chart metrics
     strategy_names = [result.strategy.name for result in results]
     total_returns = [result.metrics['total_return'] * 100 for result in results]
     sharpe_ratios = [result.metrics['sharpe_ratio'] for result in results]
     max_drawdowns = [result.metrics['max_drawdown'] * 100 for result in results]
     
     fig.add_trace(
-        go.Bar(x=strategy_names, y=total_returns, name='Rendement Total'),
+        go.Bar(x=strategy_names, y=total_returns, name='Total Return'),
         row=1, col=2
     )
     
@@ -587,6 +779,6 @@ def _compare_results_plotly(results: tuple):
         row=2, col=2
     )
     
-    fig.update_layout(height=600, showlegend=True, title_text="Comparaison des Stratégies")
+    fig.update_layout(height=600, showlegend=True, title_text="Strategy Comparison")
     fig.show()
     return fig

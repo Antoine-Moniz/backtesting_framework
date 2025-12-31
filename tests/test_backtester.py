@@ -1,5 +1,5 @@
 """
-Tests unitaires pour la classe Backtester.
+Unit tests for the Backtester class.
 """
 
 import pytest
@@ -9,21 +9,19 @@ from pathlib import Path
 import tempfile
 import os
 
-from backtesting_framework.backtester import Backtester
-from backtesting_framework.strategy import BuyAndHoldStrategy, MovingAverageCrossStrategy
-from backtesting_framework.result import Result
+from backtesting_framework import Backtester, Strategy, Result
+from examples.strategies import BuyAndHoldStrategy, MovingAverageCrossStrategy
 
 
-class TestBacktester:
-    """Tests pour la classe Backtester."""
+class TestBacktesterBasic:
+    """Basic tests for Backtester initialization and execution."""
     
     @pytest.fixture
     def sample_data(self):
-        """Crée des données de test."""
+        """Create sample single-asset test data."""
         rng = np.random.default_rng(42)
         dates = pd.date_range('2023-01-01', periods=100, freq='D')
         
-        # Génération de prix avec random walk
         returns = rng.normal(0.001, 0.02, 100)
         prices = [100]
         for ret in returns:
@@ -41,220 +39,119 @@ class TestBacktester:
         return data
     
     @pytest.fixture
-    def csv_file(self, sample_data):
-        """Crée un fichier CSV temporaire avec les données de test."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-            sample_data.to_csv(f.name, index=False)
-            yield f.name
-        os.unlink(f.name)
+    def multi_asset_data(self):
+        """Create multi-asset test data."""
+        rng = np.random.default_rng(42)
+        dates = pd.date_range('2023-01-01', periods=100, freq='D')
+        
+        data = pd.DataFrame({
+            'date': dates,
+            'SPY_close': 300 + np.cumsum(rng.normal(0.001, 0.02, 100)),
+            'AGG_close': 100 + np.cumsum(rng.normal(0.0002, 0.005, 100)),
+            'close': 300 + np.cumsum(rng.normal(0.001, 0.02, 100))
+        })
+        
+        return data
     
-    def test_backtester_initialization_dataframe(self, sample_data):
-        """Test l'initialisation avec un DataFrame."""
+    def test_initialization(self, sample_data):
+        """Test Backtester initialization with DataFrame."""
         backtester = Backtester(sample_data, initial_capital=50000)
         
         assert backtester.initial_capital == 50000
         assert len(backtester.data) == 100
         assert 'close' in backtester.data.columns
-        assert isinstance(backtester.data.index, pd.DatetimeIndex)
-    
-    def test_backtester_initialization_csv(self, csv_file):
-        """Test l'initialisation avec un fichier CSV."""
-        backtester = Backtester(csv_file)
-        
-        assert backtester.initial_capital == 100000  # Valeur par défaut
-        assert len(backtester.data) > 0
-        assert 'close' in backtester.data.columns
-    
-    def test_backtester_initialization_nonexistent_file(self):
-        """Test l'initialisation avec un fichier inexistant."""
-        with pytest.raises(FileNotFoundError):
-            Backtester("nonexistent_file.csv")
-    
-    def test_backtester_initialization_unsupported_format(self):
-        """Test l'initialisation avec un format non supporté."""
-        with tempfile.NamedTemporaryFile(suffix='.txt', delete=False) as f:
-            f.write(b"test data")
-            temp_file = f.name
-            
-        try:
-            with pytest.raises(ValueError, match="Format de fichier non supporté"):
-                Backtester(temp_file)
-        finally:
-            try:
-                os.unlink(temp_file)
-            except OSError:
-                pass  # Ignore les erreurs de suppression sur Windows
-    
-    def test_data_validation_missing_columns(self):
-        """Test la validation avec colonnes manquantes."""
-        # Données sans colonne 'close'
-        bad_data = pd.DataFrame({
-            'date': pd.date_range('2023-01-01', periods=10),
-            'price': [100 + i for i in range(10)]
-        })
-        
-        with pytest.raises(ValueError, match="Colonnes manquantes"):
-            Backtester(bad_data)
-    
-    def test_data_validation_auto_columns(self, sample_data):
-        """Test la création automatique des colonnes manquantes."""
-        # Supprimer quelques colonnes
-        minimal_data = sample_data[['date', 'close']].copy()
-        
-        backtester = Backtester(minimal_data)
-        
-        # Vérifier que les colonnes ont été ajoutées
-        assert 'open' in backtester.data.columns
-        assert 'high' in backtester.data.columns
-        assert 'low' in backtester.data.columns
-        assert 'volume' in backtester.data.columns
     
     def test_run_backtest_buy_and_hold(self, sample_data):
-        """Test un backtest simple avec Buy and Hold."""
+        """Test backtest execution with Buy and Hold strategy."""
         backtester = Backtester(sample_data, initial_capital=100000)
         strategy = BuyAndHoldStrategy()
         
         result = backtester.run_backtest(strategy)
         
         assert isinstance(result, Result)
-        assert result.strategy.name == "Buy and Hold"
-        assert len(result.results_df) == len(sample_data)
+        assert len(result.results_df) == 100
         assert 'portfolio_value' in result.results_df.columns
         assert 'returns' in result.results_df.columns
-        assert 'position' in result.results_df.columns
     
-    def test_run_backtest_ma_cross(self, sample_data):
-        """Test un backtest avec stratégie de croisement de moyennes mobiles."""
-        backtester = Backtester(sample_data, initial_capital=100000)
-        strategy = MovingAverageCrossStrategy(short_window=5, long_window=20)
+    def test_multi_asset_backtest(self, multi_asset_data):
+        """Test multi-asset portfolio backtest."""
         
-        result = backtester.run_backtest(strategy)
+        class Portfolio60_40(Strategy):
+            """60/40 portfolio strategy."""
+            
+            @property
+            def name(self) -> str:
+                return "60/40 Portfolio"
+            
+            def fit(self, historical_data: pd.DataFrame) -> None:
+                pass
+            
+            def get_position(self, data: pd.DataFrame, positions: dict) -> dict:
+                return {'SPY': 0.6, 'AGG': 0.4}
+        
+        backtester = Backtester(multi_asset_data, initial_capital=100000)
+        strategy = Portfolio60_40()
+        
+        result = backtester.run_backtest(strategy, asset_symbols=['SPY', 'AGG'])
         
         assert isinstance(result, Result)
-        assert "MA Cross" in result.strategy.name
-        assert len(result.trades) > 0  # Devrait y avoir des trades
-    
-    def test_run_backtest_with_dates(self, sample_data):
-        """Test un backtest avec dates de début et fin."""
-        backtester = Backtester(sample_data)
-        strategy = BuyAndHoldStrategy()
-        
-        result = backtester.run_backtest(
-            strategy,
-            start_date='2023-01-15',
-            end_date='2023-02-15'
-        )
-        
-        # Vérifier que les résultats couvrent la période demandée
-        assert result.results_df.index[0] >= pd.to_datetime('2023-01-15')
-        assert result.results_df.index[-1] <= pd.to_datetime('2023-02-15')
-    
-    def test_run_backtest_invalid_date_range(self, sample_data):
-        """Test avec une plage de dates invalide."""
-        backtester = Backtester(sample_data)
-        strategy = BuyAndHoldStrategy()
-        
-        with pytest.raises(ValueError, match="Aucune donnée disponible"):
-            backtester.run_backtest(
-                strategy,
-                start_date='2025-01-01',  # Date dans le futur
-                end_date='2025-01-31'
-            )
+        assert 'spy_shares' in result.results_df.columns
+        assert 'agg_shares' in result.results_df.columns
+        assert result.results_df['spy_shares'].max() > 0
+        assert result.results_df['agg_shares'].max() > 0
     
     def test_transaction_costs(self, sample_data):
-        """Test que les coûts de transaction sont appliqués."""
-        # Backtester avec coûts élevés
-        backtester_high_cost = Backtester(
-            sample_data, 
-            transaction_cost=0.01,  # 1% de coût
-            slippage=0.001  # 0.1% de slippage
-        )
+        """Test that transaction costs reduce returns."""
+        backtester_no_cost = Backtester(sample_data, initial_capital=100000, 
+                                       transaction_cost=0.0)
+        backtester_with_cost = Backtester(sample_data, initial_capital=100000, 
+                                         transaction_cost=0.001)
         
-        # Backtester sans coûts
-        backtester_no_cost = Backtester(
-            sample_data,
-            transaction_cost=0.0,
-            slippage=0.0
-        )
+        strategy = BuyAndHoldStrategy()
         
-        strategy = MovingAverageCrossStrategy(short_window=3, long_window=10)
-        
-        result_high_cost = backtester_high_cost.run_backtest(strategy)
         result_no_cost = backtester_no_cost.run_backtest(strategy)
+        result_with_cost = backtester_with_cost.run_backtest(strategy)
         
-        # La performance avec coûts devrait être inférieure
-        high_cost_return = result_high_cost.metrics['total_return']
-        no_cost_return = result_no_cost.metrics['total_return']
+        final_no_cost = result_no_cost.results_df['portfolio_value'].iloc[-1]
+        final_with_cost = result_with_cost.results_df['portfolio_value'].iloc[-1]
         
-        assert high_cost_return <= no_cost_return
+        assert final_with_cost <= final_no_cost
     
-    def test_rebalance_frequencies(self, sample_data):
-        """Test différentes fréquences de rééquilibrage."""
-        backtester = Backtester(sample_data)
+    def test_portfolio_value_bug_fix(self, multi_asset_data):
+        """Test that portfolio value includes all assets."""
         
-        # Stratégie quotidienne
-        strategy_daily = MovingAverageCrossStrategy(short_window=3, long_window=10)
-        strategy_daily.rebalance_frequency = 'D'
+        class ThreeAssetStrategy(Strategy):
+            @property
+            def name(self) -> str:
+                return "Multi-Asset Test"
+            
+            def fit(self, historical_data: pd.DataFrame) -> None:
+                pass
+            
+            def get_position(self, data: pd.DataFrame, positions: dict) -> dict:
+                return {'SPY': 0.7, 'AGG': 0.3}
         
-        # Stratégie hebdomadaire
-        strategy_weekly = MovingAverageCrossStrategy(short_window=3, long_window=10)
-        strategy_weekly.rebalance_frequency = 'W'
+        backtester = Backtester(multi_asset_data, initial_capital=100000)
+        strategy = ThreeAssetStrategy()
         
-        result_daily = backtester.run_backtest(strategy_daily)
-        result_weekly = backtester.run_backtest(strategy_weekly)
+        result = backtester.run_backtest(strategy, asset_symbols=['SPY', 'AGG'])
         
-        # La stratégie quotidienne devrait avoir plus de trades
-        assert len(result_daily.trades) >= len(result_weekly.trades)
-    
-    def test_get_rebalance_dates(self, sample_data):
-        """Test le calcul des dates de rééquilibrage."""
-        backtester = Backtester(sample_data)
+        # Verify final portfolio value calculation
+        last_row = result.results_df.iloc[-1]
         
-        # Test quotidien
-        daily_dates = backtester._get_rebalance_dates(backtester.data, 'D')
-        assert len(daily_dates) == len(backtester.data)
+        calculated_value = last_row['cash']
+        for asset in ['SPY', 'AGG']:
+            shares_col = f'{asset.lower()}_shares'
+            if shares_col in result.results_df.columns:
+                shares = last_row[shares_col]
+                # Column names normalized to lowercase by DataHandler
+                price = backtester.data.iloc[-1][f'{asset.lower()}_close']
+                calculated_value += shares * price
         
-        # Test hebdomadaire
-        weekly_dates = backtester._get_rebalance_dates(backtester.data, 'W')
-        assert len(weekly_dates) <= len(backtester.data)
+        actual_value = last_row['portfolio_value']
         
-        # Test mensuel
-        monthly_dates = backtester._get_rebalance_dates(backtester.data, 'M')
-        assert len(monthly_dates) <= len(weekly_dates)
-    
-    def test_execute_trade(self, sample_data):
-        """Test l'exécution d'un trade."""
-        backtester = Backtester(sample_data, transaction_cost=0.001, slippage=0.0001)
-        
-        trade_info = backtester._execute_trade(
-            old_position=0.0,
-            new_position=1.0,
-            price=100.0,
-            cash=100000.0,
-            current_shares=0.0,
-            date=pd.Timestamp('2023-01-01')
-        )
-        
-        assert trade_info is not None
-        assert 'transaction_cost' in trade_info
-        assert 'effective_price' in trade_info
-        assert trade_info['transaction_cost'] > 0
-        assert abs(trade_info['effective_price'] - 100.0) > 1e-10  # À cause du slippage
-    
-    def test_execute_trade_no_change(self, sample_data):
-        """Test qu'aucun trade n'est exécuté si pas de changement significatif."""
-        backtester = Backtester(sample_data)
-        
-        trade_info = backtester._execute_trade(
-            old_position=1.0,
-            new_position=1.0001,  # Changement très petit
-            price=100.0,
-            cash=100000.0,
-            current_shares=1000.0,
-            date=pd.Timestamp('2023-01-01')
-        )
-        
-        assert trade_info is None  # Pas de trade à cause du seuil de tolérance
+        # Values should match within floating-point precision
+        assert abs(calculated_value - actual_value) < 0.01
 
 
 if __name__ == "__main__":

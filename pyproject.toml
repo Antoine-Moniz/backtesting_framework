@@ -6,9 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "backtesting-framework"
 version = "1.0.0"
 authors = [
-    {name = "Antoine Moniz", email = "antoine.moniz@dauphine.eu"},
+    {name = "Mariano Benjamin", email = "mariano.benjamin@dauphine.eu"},
+    {name = "Noah Chikhi", email = "noah.chikhi@dauphine.eu"},
+    {name = "Antoine Moniz", email = "antoine.moniz@dauphine.eu"}
 ]
-description = "Framework de backtesting de stratégies d'investissement"
+description = "Modern investment strategy backtesting framework with multi-asset portfolio support"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
@@ -22,6 +24,7 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Office/Business :: Financial :: Investment",
     "Topic :: Scientific/Engineering :: Information Analysis",
 ]
@@ -31,7 +34,9 @@ keywords = [
     "investment", 
     "trading", 
     "strategy", 
-    "portfolio"
+    "portfolio",
+    "multi-asset",
+    "quantitative-finance"
 ]
 
 dependencies = [
@@ -47,8 +52,7 @@ dependencies = [
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
-    "black>=22.0.0",
-    "flake8>=5.0.0",
+    "ruff>=0.1.0",
     "mypy>=0.991",
     "jupyter>=1.0.0",
     "notebook>=6.4.0",
